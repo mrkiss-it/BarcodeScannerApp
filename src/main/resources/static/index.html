@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Quét mã vạch</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        #video {
+            width: 100%;
+            max-height: 300px;
+            height: auto;
+            border-radius: 8px;
+            object-fit: cover;
+            transition: max-height 0.3s ease;
+        }
+
+        #video.expanded {
+            max-height: 500px;
+        }
+
+        .camera-container {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .scan-frame {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 150px;
+            height: 150px;
+            transform: translate(-50%, -50%);
+            border: 3px solid;
+            border-radius: 12px;
+            transition: border-color 0.3s ease;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .scan-frame.scanning {
+            border-color: #dc3545; /* Đỏ - đang quét */
+            animation: pulse 1s infinite;
+        }
+
+        .scan-frame.found {
+            border-color: #28a745; /* Xanh - tìm thấy mã */
+            animation: found-pulse 0.5s ease;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        @keyframes found-pulse {
+            0% { transform: translate(-50%, -50%) scale(1); }
+            50% { transform: translate(-50%, -50%) scale(1.1); }
+            100% { transform: translate(-50%, -50%) scale(1); }
+        }
+
+        .result-item {
+            border-left: 4px solid #007bff;
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .result-time {
+            font-size: 0.85em;
+            color: #6c757d;
+            margin-bottom: 8px;
+        }
+
+        .scan-status {
+            text-align: center;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+
+        .status-scanning {
+            color: #dc3545;
+        }
+
+        .status-ready {
+            color: #28a745;
+        }
+
+        .results-container {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body class="bg-light">
+<div class="container-fluid py-4">
+    <h2 class="text-center mb-4">Ứng dụng Quét Mã Vạch & QR</h2>
+
+    <div class="row">
+        <!-- Cột trái: Upload ảnh -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">📁 Tải ảnh lên để quét</h5>
+                </div>
+                <div class="card-body">
+                    <form id="barcodeForm" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="qrImage" class="form-label">Chọn ảnh chứa mã vạch/QR:</label>
+                            <input type="file" id="qrImage" name="qrImage" accept="image/*" class="form-control" required />
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">
+                            <span class="spinner-border spinner-border-sm d-none me-2" id="uploadSpinner"></span>
+                            Tải lên & Quét mã
+                        </button>
+                    </form>
+
+                    <!-- Preview ảnh đã chọn -->
+                    <div class="mt-3">
+                        <img id="imagePreview" class="img-fluid rounded d-none" style="max-height: 150px;" alt="Preview">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cột phải: Camera quét trực tiếp -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">📷 Quét trực tiếp từ Camera</h5>
+                </div>
+                <div class="card-body">
+                    <div class="camera-container">
+                        <video id="video" autoplay muted playsinline></video>
+                        <div id="scanFrame" class="scan-frame scanning"></div>
+                    </div>
+
+                    <div class="scan-status mt-2">
+                        <span id="scanStatus" class="status-scanning">🔴 Đang tìm mã vạch...</span>
+                    </div>
+
+                    <div class="d-flex gap-2 mt-3">
+                        <button id="toggleCamera" class="btn btn-success flex-fill">Bật/Tắt Camera</button>
+                        <button id="switchCamera" class="btn btn-outline-secondary">🔄</button>
+                        <button id="resizeCamera" class="btn btn-outline-primary">📏</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Kết quả -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">📋 Kết quả quét mã</h5>
+                    <button id="clearResults" class="btn btn-sm btn-outline-light">Xóa tất cả</button>
+                </div>
+                <div class="card-body">
+                    <div id="noResults" class="text-center text-muted py-4">
+                        <i>Chưa có kết quả nào. Hãy tải ảnh lên hoặc sử dụng camera để quét mã.</i>
+                    </div>
+                    <div id="resultsContainer" class="results-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<canvas id="canvas" style="display: none;"></canvas>
+
+<script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const scanFrame = document.getElementById("scanFrame");
+    const scanStatus = document.getElementById("scanStatus");
+    const barcodeForm = document.getElementById("barcodeForm");
+    const qrImage = document.getElementById("qrImage");
+    const imagePreview = document.getElementById("imagePreview");
+    const uploadSpinner = document.getElementById("uploadSpinner");
+    const resultsContainer = document.getElementById("resultsContainer");
+    const noResults = document.getElementById("noResults");
+    const toggleCamera = document.getElementById("toggleCamera");
+    const switchCamera = document.getElementById("switchCamera");
+    const resizeCamera = document.getElementById("resizeCamera");
+    const clearResults = document.getElementById("clearResults");
+
+    let scanning = false;
+    let cameraStream = null;
+    let currentFacingMode = "environment";
+    let scanInterval = null;
+    let resultCount = 0;
+    let isProcessing = false; // Ngăn quét đồng thời
+    let scanCount = 0; // Đếm số lần quét
+
+    // Tạo âm thanh thông báo
+    function playFoundSound() {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+            oscillator.type = 'sine';
+
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.2);
+        } catch (e) {
+            console.log("Cannot play sound:", e);
+        }
+    }
+
+    // Khởi tạo camera
+    async function initCamera() {
+        try {
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+            }
+
+            cameraStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: currentFacingMode,
+                    width: { ideal: 1280, min: 640 },
+                    height: { ideal: 720, min: 480 },
+                    frameRate: { ideal: 30, min: 15 },
+                    focusMode: "continuous",
+                    exposureMode: "continuous",
+                    whiteBalanceMode: "continuous"
+                }
+            });
+
+            video.srcObject = cameraStream;
+            scanning = true;
+            isProcessing = false;
+            scanCount = 0;
+            updateScanStatus("🔴 Đang tìm mã vạch...", "scanning");
+            startScanning();
+        } catch (err) {
+            console.error("Camera error:", err);
+            updateScanStatus("❌ Không thể truy cập camera", "scanning");
+        }
+    }
+
+    // Bắt đầu quét liên tục
+    function startScanning() {
+        if (scanInterval) clearInterval(scanInterval);
+        scanInterval = setInterval(scanFromCamera, 500); // Tăng tần suất lên 0.5s
+    }
+
+    // Dừng quét
+    function stopScanning() {
+        scanning = false;
+        isProcessing = false;
+        if (scanInterval) {
+            clearInterval(scanInterval);
+            scanInterval = null;
+        }
+    }
+
+    // Cập nhật trạng thái quét
+    function updateScanStatus(message, type) {
+        scanStatus.textContent = message;
+        scanStatus.className = `status-${type}`;
+        scanFrame.className = `scan-frame ${type}`;
+    }
+
+    // Reset trạng thái sau khi tìm thấy mã
+    function resetToScanningState() {
+        setTimeout(() => {
+            if (scanning && video.srcObject) {
+                updateScanStatus("🔴 Đang tìm mã vạch...", "scanning");
+                isProcessing = false;
+            }
+        }, 500);
+    }
+
+    // Quét từ camera - Version cải tiến
+    const scanFromCamera = async () => {
+        // Kiểm tra các điều kiện trước khi quét
+        if (!scanning ||
+            isProcessing ||
+            video.readyState !== video.HAVE_ENOUGH_DATA ||
+            !video.srcObject) {
+            return;
+        }
+
+        scanCount++;
+        console.log(`Scan attempt: ${scanCount}`);
+
+        // Đặt flag đang xử lý
+        isProcessing = true;
+
+        try {
+            // Thiết lập canvas với độ phân giải cao hơn
+            const videoWidth = video.videoWidth || 1280;
+            const videoHeight = video.videoHeight || 720;
+
+            canvas.width = videoWidth;
+            canvas.height = videoHeight;
+            const ctx = canvas.getContext("2d");
+
+            // Cải thiện chất lượng render
+            ctx.imageSmoothingEnabled = false; // Tắt làm mịn để giữ độ sắc nét
+            ctx.imageSmoothingQuality = 'high';
+
+            // Vẽ frame hiện tại với độ phân giải gốc
+            ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
+
+            // Cải thiện độ tương phản và độ sáng (tùy chọn)
+            const imageData = ctx.getImageData(0, 0, videoWidth, videoHeight);
+            enhanceImageForBarcode(imageData);
+            ctx.putImageData(imageData, 0, 0);
+
+            // Chuyển đổi thành blob với chất lượng cao
+            canvas.toBlob(async (blob) => {
+                if (!blob || !scanning) {
+                    isProcessing = false;
+                    return;
+                }
+
+                try {
+                    const formData = new FormData();
+                    formData.append("qrImage", blob, `camera_${Date.now()}.png`);
+
+                    const response = await fetch("/api/barcode-upload", {
+                        method: "POST",
+                        body: formData,
+                        timeout: 5000 // Timeout 5s
+                    });
+
+                    if (!scanning) {
+                        isProcessing = false;
+                        return;
+                    }
+
+                    if (response.ok) {
+                        const json = await response.json();
+
+                        if (json.count > 0) {
+                            // Tìm thấy mã
+                            updateScanStatus("🟢 Tìm thấy mã!", "found");
+                            addResult(json, "Camera");
+                            playFoundSound();
+
+                            // Tạm dừng quét 0.5 giây
+                            stopScanning();
+                            setTimeout(() => {
+                                if (video.srcObject) {
+                                    scanning = true;
+                                    startScanning();
+                                    updateScanStatus("🔴 Đang tìm mã vạch...", "scanning");
+                                }
+                            }, 500);
+                        } else {
+                            // Không tìm thấy mã
+                            resetToScanningState();
+                        }
+                    } else {
+                        // Lỗi server
+                        console.error("Server error:", response.status);
+                        resetToScanningState();
+                    }
+                } catch (error) {
+                    console.error("Network error:", error);
+                    resetToScanningState();
+                }
+            }, 'image/png', 1.0); // Chất lượng tối đa
+
+        } catch (error) {
+            console.error("Canvas error:", error);
+            isProcessing = false;
+            resetToScanningState();
+        }
+    };
+
+    // Thêm kết quả vào danh sách
+    function addResult(data, source) {
+        resultCount++;
+        const timestamp = new Date().toLocaleString('vi-VN');
+
+        const resultHtml = `
+        <div class="result-item">
+          <div class="result-time">
+            <strong>#${resultCount}</strong> - ${timestamp} - <span class="badge bg-secondary">${source}</span>
+          </div>
+          <div><strong>Tìm thấy ${data.count} mã:</strong></div>
+          <ul class="mb-0 mt-2">
+            ${data.codes.map(c => `<li><span class="badge bg-primary me-2">${c.format}</span>${c.text}</li>`).join('')}
+          </ul>
+        </div>
+      `;
+
+        resultsContainer.insertAdjacentHTML('afterbegin', resultHtml);
+        noResults.style.display = 'none';
+        resultsContainer.scrollTop = 0;
+    }
+
+    // Upload form
+    barcodeForm.addEventListener("submit", async function(e) {
+        e.preventDefault();
+        const file = qrImage.files[0];
+        if (!file) return;
+
+        uploadSpinner.classList.remove("d-none");
+
+        const formData = new FormData();
+        formData.append("qrImage", file);
+
+        try {
+            const response = await fetch("/api/barcode-upload", {
+                method: "POST",
+                body: formData
+            });
+
+            if (response.ok) {
+                const json = await response.json();
+                addResult(json, "Upload");
+            } else {
+                const text = await response.text();
+                alert("Lỗi: " + text);
+            }
+        } catch (error) {
+            alert("Lỗi kết nối: " + error.message);
+        } finally {
+            uploadSpinner.classList.add("d-none");
+        }
+    });
+
+    // Preview ảnh
+    qrImage.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                imagePreview.src = e.target.result;
+                imagePreview.classList.remove('d-none');
+            };
+            reader.readAsDataURL(file);
+        } else {
+            imagePreview.classList.add('d-none');
+        }
+    });
+
+    // Toggle camera
+    toggleCamera.addEventListener('click', function() {
+        if (scanning) {
+            // Tắt camera
+            stopScanning();
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+                cameraStream = null;
+            }
+            video.srcObject = null;
+            scanCount = 0;
+            updateScanStatus("⚫ Camera đã tắt", "scanning");
+            stopScanning();
+        } else {
+            // Bật camera
+            initCamera();
+        }
+    });
+
+    // Switch camera
+    switchCamera.addEventListener('click', function() {
+        currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+        if (scanning) {
+            initCamera();
+        }
+    });
+
+    // Resize camera
+    resizeCamera.addEventListener('click', function() {
+        video.classList.toggle('expanded');
+        resizeCamera.textContent = video.classList.contains('expanded') ? '📐' : '📏';
+    });
+
+    // Clear results
+    clearResults.addEventListener('click', function() {
+        if (confirm('Bạn có chắc muốn xóa tất cả kết quả?')) {
+            resultsContainer.innerHTML = '';
+            noResults.style.display = 'block';
+            resultCount = 0;
+        }
+    });
+
+    // Hàm cải thiện ảnh cho việc quét mã vạch
+    function enhanceImageForBarcode(imageData) {
+        const data = imageData.data;
+        const contrast = 1.3; // Tăng độ tương phản
+        const brightness = 10; // Tăng độ sáng nhẹ
+
+        for (let i = 0; i < data.length; i += 4) {
+            // Chuyển sang grayscale để tăng độ nhạy
+            const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+
+            // Áp dụng contrast và brightness
+            let enhanced = contrast * (gray - 128) + 128 + brightness;
+            enhanced = Math.max(0, Math.min(255, enhanced));
+
+            // Áp dụng cho tất cả channel
+            data[i] = enhanced;     // Red
+            data[i + 1] = enhanced; // Green
+            data[i + 2] = enhanced; // Blue
+            // Alpha channel giữ nguyên
+        }
+    }
+
+    // Thêm nút cải thiện chất lượng
+    const qualityControls = document.createElement('div');
+    qualityControls.className = 'mt-2 d-flex gap-2';
+    qualityControls.innerHTML = `
+      <button id="toggleEnhancement" class="btn btn-outline-info btn-sm">🎯 Tăng cường</button>
+      <button id="toggleGrayscale" class="btn btn-outline-secondary btn-sm">⚫ Grayscale</button>
+      <span id="qualityInfo" class="badge bg-info ms-2">HD: 1280x720</span>
+    `;
+    document.querySelector('.camera-container').parentNode.appendChild(qualityControls);
+
+    let enhancementEnabled = true;
+    let grayscaleEnabled = false;
+
+    document.getElementById('toggleEnhancement').addEventListener('click', function() {
+        enhancementEnabled = !enhancementEnabled;
+        this.textContent = enhancementEnabled ? '🎯 Tăng cường ON' : '🎯 Tăng cường OFF';
+        this.className = enhancementEnabled ? 'btn btn-info btn-sm' : 'btn btn-outline-info btn-sm';
+    });
+
+    document.getElementById('toggleGrayscale').addEventListener('click', function() {
+        grayscaleEnabled = !grayscaleEnabled;
+        this.textContent = grayscaleEnabled ? '⚫ Grayscale ON' : '⚫ Grayscale OFF';
+        this.className = grayscaleEnabled ? 'btn btn-secondary btn-sm' : 'btn btn-outline-secondary btn-sm';
+    });
+
+    // Cập nhật hàm enhance để sử dụng toggle
+    function enhanceImageForBarcode(imageData) {
+        if (!enhancementEnabled && !grayscaleEnabled) return;
+
+        const data = imageData.data;
+
+        for (let i = 0; i < data.length; i += 4) {
+            if (grayscaleEnabled) {
+                // Chuyển sang grayscale
+                const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+                data[i] = gray;
+                data[i + 1] = gray;
+                data[i + 2] = gray;
+            }
+
+            if (enhancementEnabled) {
+                // Tăng độ tương phản
+                const contrast = 1.4;
+                const brightness = 15;
+
+                for (let j = 0; j < 3; j++) {
+                    let enhanced = contrast * (data[i + j] - 128) + 128 + brightness;
+                    data[i + j] = Math.max(0, Math.min(255, enhanced));
+                }
+            }
+        }
+    }
+
+    // Khởi tạo
+    initCamera();
+
+    // Debug: Theo dõi trạng thái và chất lượng
+    setInterval(() => {
+        const quality = video.videoWidth ? `${video.videoWidth}x${video.videoHeight}` : 'Unknown';
+        document.getElementById('qualityInfo').textContent = `Quality: ${quality}`;
+        console.log(`Status - Scanning: ${scanning}, Processing: ${isProcessing}, Count: ${scanCount}, Quality: ${quality}`);
+    }, 5000);
+</script>
+</body>
+</html>
